@@ -621,6 +621,7 @@ named!(pub uml_parser<&[u8], UMLTokens >,
                 line_ending?                   ~
                 token: alt!(
                     startuml |
+                    section_parser |
                     enduml |
                     include_parser |
                     note_parser |
