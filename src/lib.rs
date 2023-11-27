@@ -66,6 +66,9 @@ pub enum UMLToken {
         sequences: Vec<UMLTokens>,
         text: String,
     },
+    Section {
+        text: String
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -434,6 +437,8 @@ named!(message_parser<&[u8], UMLToken>,
     )
 );
 
+
+
 named!(par_parser<&[u8], UMLToken>,
   chain!(
     space?                                ~
@@ -645,6 +650,26 @@ named!(pub uml_parser<&[u8], UMLTokens >,
     )
 );
 
+named!(section_parser<&[u8],UMLToken>,
+    chain!(
+        space?                          ~
+        tag!("==")                      ~
+        name: map_res!(
+            take_until!("=="),
+            std::str::from_utf8
+        )                                ~
+        tag!("==") ~
+        space? ~
+        line_ending
+        ,
+        || {
+            UMLToken::Section  {
+                text: name.trim().to_string()
+            }
+        }
+    )
+);
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -721,6 +746,16 @@ mod tests {
                     long_name: None,
                 }
             )
+        );
+    }
+
+    #[test]
+    fn test_section_parser() {
+        let test_uml = "==THIS IS A TEST==\n";
+        let result = ::section_parser(test_uml.as_bytes());
+        assert_eq!(result,
+            Done(&[][..],
+            UMLToken::Section { text: "THIS IS A TEST".to_string()})
         );
     }
 

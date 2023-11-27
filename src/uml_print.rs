@@ -21,7 +21,7 @@ impl fmt::Display for UMLToken {
             UMLToken::StartUML => "@startuml\n".to_string(),
 
             UMLToken::EndUML => "@enduml\n".to_string(),
-
+            UMLToken::Section { ref text } => format!("=={}==\n",text),
             UMLToken::Note {
                 ref position,
                 ref text,
