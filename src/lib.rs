@@ -1,10 +1,13 @@
+#![allow(deprecated)]
 #![allow(missing_docs)]
 #[macro_use]
 extern crate nom;
 #[macro_use]
 extern crate log;
 
-use nom::{digit, line_ending, not_line_ending, space, IResult};
+use nom::{
+    digit, is_alphanumeric, is_space, line_ending, multispace, not_line_ending, space, IResult,
+};
 use std::fs::File;
 use std::io::Read;
 
@@ -15,8 +18,13 @@ mod uml_print;
 pub enum UMLToken {
     StartUML,
     EndUML,
-    Note { position: String, text: String },
-    Parallel { sequences: Vec<UMLTokens> },
+    Note {
+        position: String,
+        text: String,
+    },
+    Parallel {
+        sequences: Vec<UMLTokens>,
+    },
     Message {
         from: String,
         to: String,
@@ -27,14 +35,37 @@ pub enum UMLToken {
         long_name: Option<String>,
         short_name: String,
     },
-    Activate { name: String },
-    Deactivate { name: String },
-    Loop { sequence: UMLTokens, count: u8 },
-    Include { file: String, sequence: UMLTokens },
-    Box { name: String, sequence: UMLTokens },
-    Destroy { name: String },
-    Delay { text: String },
-    Alt { sequences: Vec<UMLTokens> },
+    Activate {
+        name: String,
+    },
+    Deactivate {
+        name: String,
+    },
+    Loop {
+        sequence: UMLTokens,
+        count: u8,
+    },
+    Include {
+        file: String,
+        sequence: UMLTokens,
+    },
+    Box {
+        name: String,
+        sequence: UMLTokens,
+    },
+    Destroy {
+        name: String,
+    },
+    Delay {
+        text: String,
+    },
+    Alt {
+        sequences: Vec<UMLTokens>,
+    },
+    Group {
+        sequences: Vec<UMLTokens>,
+        text: String,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -48,9 +79,10 @@ impl UMLTokens {
     }
 }
 
-fn take_until_or_line_ending<'a>(input: &'a [u8],
-                                 tag: &'static str)
-                                 -> IResult<&'a [u8], &'a [u8]> {
+fn take_until_or_line_ending<'a>(
+    input: &'a [u8],
+    tag: &'static str,
+) -> IResult<&'a [u8], &'a [u8]> {
     let line_ending_res = not_line_ending(input);
 
     let output = match line_ending_res {
@@ -70,7 +102,6 @@ fn take_until_or_line_ending<'a>(input: &'a [u8],
 
 /// Parse a UML file and return the `UMLTokens` that were parsed.
 pub fn parse_uml_file(file: &str, path: Option<&std::path::Path>) -> UMLTokens {
-
     let old_path = std::env::current_dir().expect("Can't access current directory");
 
     if let Some(path) = path {
@@ -269,6 +300,33 @@ named!(note_parser<&[u8], UMLToken>,
     )
 );
 
+named!(one_line_note_parser<&[u8], UMLToken>,
+    //note over app : User enters media info page
+    chain!(
+        space? ~
+        tag!("note") ~
+        space? ~
+        position: map_res!(
+            take_until_and_consume!(":"),
+            std::str::from_utf8
+        ) ~
+        space? ~
+        text: map_res!(
+            take_until!("\n"),
+            std::str::from_utf8
+        )~
+        space? ~
+        line_ending?
+        ,
+        || {
+            UMLToken::Note {
+                position: position.trim().to_string(),
+                text: text.to_string()
+            }
+        }
+    )
+);
+
 named!(loop_parser<&[u8], UMLToken>,
     chain!(
         space?                            ~
@@ -407,6 +465,38 @@ named!(par_parser<&[u8], UMLToken>,
   )
 );
 
+named!(group_parser<&[u8], UMLToken>,
+  chain!(
+    space?                                ~
+    tag!("group") ~
+    space? ~
+    text: map_res!(
+        not_line_ending,
+        std::str::from_utf8
+    )~
+    uml_array: many1!(
+        chain!(
+            tokens: uml_parser            ~
+            space?                        ~
+            line_ending?                  ~
+            || {
+                tokens
+            }
+        )
+    )                                     ~
+    tag!("end")                           ~
+    not_line_ending                       ~
+    line_ending
+    ,
+    || {
+        UMLToken::Group {
+            sequences: uml_array,
+            text:text.trim().to_string()
+        }
+    }
+  )
+);
+
 named!(alt_parser<&[u8], UMLToken>,
   chain!(
     space?                                ~
@@ -529,9 +619,11 @@ named!(pub uml_parser<&[u8], UMLTokens >,
                     enduml |
                     include_parser |
                     note_parser |
+                    one_line_note_parser |
                     participant_parser |
                     par_parser |
                     alt_parser |
+                    group_parser |
                     delay_parser |
                     activate_parser |
                     deactivate_parser |
@@ -556,21 +648,25 @@ named!(pub uml_parser<&[u8], UMLTokens >,
 #[cfg(test)]
 mod tests {
     use super::*;
-    use nom::IResult::Done;
+    use nom::{AsBytes, IResult::Done};
 
     #[test]
     fn test_parse_message() {
         let test_uml = "PERSON_A->PERSON_B\n";
         let result = ::message_parser(test_uml.as_bytes());
 
-        assert_eq!(result,
-                   Done(&[][..],
-                        UMLToken::Message {
-                            from: "PERSON_A".to_string(),
-                            to: "PERSON_B".to_string(),
-                            text: None,
-                            colour: None,
-                        }));
+        assert_eq!(
+            result,
+            Done(
+                &[][..],
+                UMLToken::Message {
+                    from: "PERSON_A".to_string(),
+                    to: "PERSON_B".to_string(),
+                    text: None,
+                    colour: None,
+                }
+            )
+        );
     }
 
     #[test]
@@ -578,14 +674,18 @@ mod tests {
         let test_uml = "PERSON_A->PERSON_B:Test\n";
         let result = ::message_parser(test_uml.as_bytes());
 
-        assert_eq!(result,
-                   Done(&[][..],
-                        UMLToken::Message {
-                            from: "PERSON_A".to_string(),
-                            to: "PERSON_B".to_string(),
-                            text: Some("Test".to_string()),
-                            colour: None,
-                        }));
+        assert_eq!(
+            result,
+            Done(
+                &[][..],
+                UMLToken::Message {
+                    from: "PERSON_A".to_string(),
+                    to: "PERSON_B".to_string(),
+                    text: Some("Test".to_string()),
+                    colour: None,
+                }
+            )
+        );
     }
 
     #[test]
@@ -593,14 +693,18 @@ mod tests {
         let test_uml = "PERSON_A  ->    PERSON_B:     Test\n";
         let result = ::message_parser(test_uml.as_bytes());
 
-        assert_eq!(result,
-                   Done(&[][..],
-                        UMLToken::Message {
-                            from: "PERSON_A".to_string(),
-                            to: "PERSON_B".to_string(),
-                            text: Some("Test".to_string()),
-                            colour: None,
-                        }));
+        assert_eq!(
+            result,
+            Done(
+                &[][..],
+                UMLToken::Message {
+                    from: "PERSON_A".to_string(),
+                    to: "PERSON_B".to_string(),
+                    text: Some("Test".to_string()),
+                    colour: None,
+                }
+            )
+        );
     }
 
     #[test]
@@ -608,12 +712,16 @@ mod tests {
         let test_uml = "participant test\n";
         let result = ::participant_parser(test_uml.as_bytes());
 
-        assert_eq!(result,
-                   Done(&[][..],
-                        UMLToken::Participant {
-                            short_name: "test".to_string(),
-                            long_name: None,
-                        }));
+        assert_eq!(
+            result,
+            Done(
+                &[][..],
+                UMLToken::Participant {
+                    short_name: "test".to_string(),
+                    long_name: None,
+                }
+            )
+        );
     }
 
     #[test]
@@ -621,12 +729,16 @@ mod tests {
         let test_uml = "participant \"test name\" as hello\n";
         let result = ::participant_parser(test_uml.as_bytes());
 
-        assert_eq!(result,
-                   Done(&[][..],
-                        UMLToken::Participant {
-                            short_name: "hello".to_string(),
-                            long_name: Some("\"test name\"".to_string()),
-                        }));
+        assert_eq!(
+            result,
+            Done(
+                &[][..],
+                UMLToken::Participant {
+                    short_name: "hello".to_string(),
+                    long_name: Some("\"test name\"".to_string()),
+                }
+            )
+        );
     }
 
     #[test]
@@ -637,18 +749,24 @@ participant "test name" as hello
 
         let result = ::uml_parser(test_uml.as_bytes());
 
-        assert_eq!(result,
-                   Done(&[][..],
-                        UMLTokens {
-                            tokens: vec![UMLToken::Participant {
-                                             short_name: "\"test name\"".to_string(),
-                                             long_name: None,
-                                         },
-                                         UMLToken::Participant {
-                                             short_name: "hello".to_string(),
-                                             long_name: Some("\"test name\"".to_string()),
-                                         }],
-                        }));
+        assert_eq!(
+            result,
+            Done(
+                &[][..],
+                UMLTokens {
+                    tokens: vec![
+                        UMLToken::Participant {
+                            short_name: "\"test name\"".to_string(),
+                            long_name: None,
+                        },
+                        UMLToken::Participant {
+                            short_name: "hello".to_string(),
+                            long_name: Some("\"test name\"".to_string()),
+                        }
+                    ],
+                }
+            )
+        );
     }
 
     #[test]
@@ -659,22 +777,28 @@ TESTB->TESTA: Hello
 
         let result = ::uml_parser(test_uml.as_bytes());
 
-        assert_eq!(result,
-                   Done(&[][..],
-                        UMLTokens {
-                            tokens: vec![UMLToken::Message {
-                                             from: "TESTA".to_string(),
-                                             to: "TESTB".to_string(),
-                                             text: None,
-                                             colour: None,
-                                         },
-                                         UMLToken::Message {
-                                             from: "TESTB".to_string(),
-                                             to: "TESTA".to_string(),
-                                             text: Some("Hello".to_string()),
-                                             colour: None,
-                                         }],
-                        }));
+        assert_eq!(
+            result,
+            Done(
+                &[][..],
+                UMLTokens {
+                    tokens: vec![
+                        UMLToken::Message {
+                            from: "TESTA".to_string(),
+                            to: "TESTB".to_string(),
+                            text: None,
+                            colour: None,
+                        },
+                        UMLToken::Message {
+                            from: "TESTB".to_string(),
+                            to: "TESTA".to_string(),
+                            text: Some("Hello".to_string()),
+                            colour: None,
+                        }
+                    ],
+                }
+            )
+        );
     }
 
     #[test]
@@ -682,12 +806,16 @@ TESTB->TESTA: Hello
         let test_uml = "actor test\n";
         let result = ::participant_parser(test_uml.as_bytes());
 
-        assert_eq!(result,
-                   Done(&[][..],
-                        UMLToken::Participant {
-                            short_name: "test".to_string(),
-                            long_name: None,
-                        }));
+        assert_eq!(
+            result,
+            Done(
+                &[][..],
+                UMLToken::Participant {
+                    short_name: "test".to_string(),
+                    long_name: None,
+                }
+            )
+        );
     }
 
     #[test]
@@ -695,12 +823,33 @@ TESTB->TESTA: Hello
         let test_uml = "note position\nquick test\nend note\n";
         let result = ::note_parser(test_uml.as_bytes());
 
-        assert_eq!(result,
-                   Done(&[][..],
-                        UMLToken::Note {
-                            position: "position".to_string(),
-                            text: "quick test".to_string(),
-                        }));
+        assert_eq!(
+            result,
+            Done(
+                &[][..],
+                UMLToken::Note {
+                    position: "position".to_string(),
+                    text: "quick test".to_string(),
+                }
+            )
+        );
+    }
+
+    #[test]
+    fn test_one_line_note_parser() {
+        let test_uml = "note over app: User enters media info page\n";
+        let result = ::one_line_note_parser(test_uml.as_bytes());
+        println!("{:?}", result);
+        assert_eq!(
+            result,
+            Done(
+                &[][..],
+                UMLToken::Note {
+                    position: "over app".to_string(),
+                    text: "User enters media info page".to_string(),
+                }
+            )
+        );
     }
 
     #[test]
@@ -708,8 +857,15 @@ TESTB->TESTA: Hello
         let test_uml = "activate test\n";
         let result = ::activate_parser(test_uml.as_bytes());
 
-        assert_eq!(result,
-                   Done(&[][..], UMLToken::Activate { name: "test".to_string() }));
+        assert_eq!(
+            result,
+            Done(
+                &[][..],
+                UMLToken::Activate {
+                    name: "test".to_string()
+                }
+            )
+        );
     }
 
     #[test]
@@ -717,8 +873,15 @@ TESTB->TESTA: Hello
         let test_uml = "deactivate test\n";
         let result = ::deactivate_parser(test_uml.as_bytes());
 
-        assert_eq!(result,
-                   Done(&[][..], UMLToken::Deactivate { name: "test".to_string() }));
+        assert_eq!(
+            result,
+            Done(
+                &[][..],
+                UMLToken::Deactivate {
+                    name: "test".to_string()
+                }
+            )
+        );
     }
 
     #[test]
@@ -726,8 +889,15 @@ TESTB->TESTA: Hello
         let test_uml = "destroy test\n";
         let result = ::destroy_parser(test_uml.as_bytes());
 
-        assert_eq!(result,
-                   Done(&[][..], UMLToken::Destroy { name: "test".to_string() }));
+        assert_eq!(
+            result,
+            Done(
+                &[][..],
+                UMLToken::Destroy {
+                    name: "test".to_string()
+                }
+            )
+        );
     }
 
     #[test]
@@ -743,24 +913,30 @@ TESTB->TESTA: Hello
 
         let result = ::par_parser(test_uml.as_bytes());
 
-        assert_eq!(result,
-                   Done(&[][..],
-                        UMLToken::Parallel {
-                            sequences: vec![UMLTokens {
-                                                tokens: vec![UMLToken::Message {
-                                                                 from: "PERSON_A".to_string(),
-                                                                 to: "PERSON_B".to_string(),
-                                                                 text: Some("Test".to_string()),
-                                                                 colour: None,
-                                                             }],
-                                            },
-                                            UMLTokens {
-                                                tokens: vec![UMLToken::Note {
-                                                                 position: "position".to_string(),
-                                                                 text: "quick test".to_string(),
-                                                             }],
-                                            }],
-                        }))
+        assert_eq!(
+            result,
+            Done(
+                &[][..],
+                UMLToken::Parallel {
+                    sequences: vec![
+                        UMLTokens {
+                            tokens: vec![UMLToken::Message {
+                                from: "PERSON_A".to_string(),
+                                to: "PERSON_B".to_string(),
+                                text: Some("Test".to_string()),
+                                colour: None,
+                            }],
+                        },
+                        UMLTokens {
+                            tokens: vec![UMLToken::Note {
+                                position: "position".to_string(),
+                                text: "quick test".to_string(),
+                            }],
+                        }
+                    ],
+                }
+            )
+        )
     }
 
     #[test]
@@ -787,40 +963,46 @@ TESTB->TESTA: Hello
 
         let result = ::par_parser(test_uml.as_bytes());
 
-        assert_eq!(result,
-                   Done(&[][..],
-                        UMLToken::Parallel {
-                            sequences: vec![UMLTokens {
-                                                tokens: vec![UMLToken::Note {
-                                                                 position: "position".to_string(),
-                                                                 text: "outer par".to_string(),
-                                                             },
-                                                             UMLToken::Parallel {
-                                                                 sequences: vec![UMLTokens {
-                                                                                     tokens: vec![
-                                            UMLToken::Note {
+        assert_eq!(
+            result,
+            Done(
+                &[][..],
+                UMLToken::Parallel {
+                    sequences: vec![
+                        UMLTokens {
+                            tokens: vec![
+                                UMLToken::Note {
+                                    position: "position".to_string(),
+                                    text: "outer par".to_string(),
+                                },
+                                UMLToken::Parallel {
+                                    sequences: vec![
+                                        UMLTokens {
+                                            tokens: vec![UMLToken::Note {
                                                 position: "position".to_string(),
                                                 text: "inner par".to_string()
-                                            },
-                                        ],
-                                                                                 },
-                                                                                 UMLTokens {
-                                                                                     tokens: vec![
-                                            UMLToken::Note {
+                                            },],
+                                        },
+                                        UMLTokens {
+                                            tokens: vec![UMLToken::Note {
                                                 position: "position".to_string(),
                                                 text: "inner".to_string()
-                                            },
-                                        ],
-                                                                                 }],
-                                                             }],
-                                            },
-                                            UMLTokens {
-                                                tokens: vec![UMLToken::Note {
-                                                                 position: "position".to_string(),
-                                                                 text: "outer else".to_string(),
-                                                             }],
-                                            }],
-                        }))
+                                            },],
+                                        }
+                                    ],
+                                }
+                            ],
+                        },
+                        UMLTokens {
+                            tokens: vec![UMLToken::Note {
+                                position: "position".to_string(),
+                                text: "outer else".to_string(),
+                            }],
+                        }
+                    ],
+                }
+            )
+        )
     }
 
     #[test]
@@ -833,20 +1015,26 @@ TESTB->TESTA: Hello
 
         let result = ::uml_parser(test_uml.as_bytes());
 
-        assert_eq!(result,
-                   Done(&[][..],
-                        UMLTokens {
-                            tokens: vec![UMLToken::Message {
-                                             from: "PERSON_A".to_string(),
-                                             to: "PERSON_B".to_string(),
-                                             text: Some("Test".to_string()),
-                                             colour: None,
-                                         },
-                                         UMLToken::Note {
-                                             position: "position".to_string(),
-                                             text: "quick test".to_string(),
-                                         }],
-                        }));
+        assert_eq!(
+            result,
+            Done(
+                &[][..],
+                UMLTokens {
+                    tokens: vec![
+                        UMLToken::Message {
+                            from: "PERSON_A".to_string(),
+                            to: "PERSON_B".to_string(),
+                            text: Some("Test".to_string()),
+                            colour: None,
+                        },
+                        UMLToken::Note {
+                            position: "position".to_string(),
+                            text: "quick test".to_string(),
+                        }
+                    ],
+                }
+            )
+        );
     }
 
     #[test]
@@ -860,17 +1048,21 @@ TESTB->TESTA: Hello
 
         let result = ::loop_parser(test_uml.as_bytes());
 
-        assert_eq!(result,
-                   Done(&[][..],
-                        UMLToken::Loop {
-                            count: 10,
-                            sequence: UMLTokens {
-                                tokens: vec![UMLToken::Note {
-                                                 position: "position".to_string(),
-                                                 text: "quick test".to_string(),
-                                             }],
-                            },
-                        }));
+        assert_eq!(
+            result,
+            Done(
+                &[][..],
+                UMLToken::Loop {
+                    count: 10,
+                    sequence: UMLTokens {
+                        tokens: vec![UMLToken::Note {
+                            position: "position".to_string(),
+                            text: "quick test".to_string(),
+                        }],
+                    },
+                }
+            )
+        );
     }
 
     #[test]
@@ -883,17 +1075,21 @@ TESTB->TESTA: Hello
 "#;
         let result = ::box_parser(test_uml.as_bytes());
 
-        assert_eq!(result,
-                   Done(&[][..],
-                        UMLToken::Box {
-                            name: "test".to_string(),
-                            sequence: UMLTokens {
-                                tokens: vec![UMLToken::Note {
-                                                 position: "position".to_string(),
-                                                 text: "quick test".to_string(),
-                                             }],
-                            },
-                        }));
+        assert_eq!(
+            result,
+            Done(
+                &[][..],
+                UMLToken::Box {
+                    name: "test".to_string(),
+                    sequence: UMLTokens {
+                        tokens: vec![UMLToken::Note {
+                            position: "position".to_string(),
+                            text: "quick test".to_string(),
+                        }],
+                    },
+                }
+            )
+        );
     }
 
     #[test]
@@ -904,16 +1100,22 @@ TESTB->TESTA: Hello
 "#;
         let result = ::uml_parser(test_uml.as_bytes());
 
-        assert_eq!(result,
-                   Done(&[][..],
-                        UMLTokens {
-                            tokens: vec![UMLToken::StartUML,
-                                         UMLToken::Participant {
-                                             short_name: "test1".to_string(),
-                                             long_name: None,
-                                         },
-                                         UMLToken::EndUML],
-                        }));
+        assert_eq!(
+            result,
+            Done(
+                &[][..],
+                UMLTokens {
+                    tokens: vec![
+                        UMLToken::StartUML,
+                        UMLToken::Participant {
+                            short_name: "test1".to_string(),
+                            long_name: None,
+                        },
+                        UMLToken::EndUML
+                    ],
+                }
+            )
+        );
     }
 
     #[test]
@@ -925,16 +1127,22 @@ TESTB->TESTA: Hello
 "#;
         let result = ::uml_parser(test_uml.as_bytes());
 
-        assert_eq!(result,
-                   Done(&[][..],
-                        UMLTokens {
-                            tokens: vec![UMLToken::StartUML,
-                                         UMLToken::Participant {
-                                             short_name: "test1".to_string(),
-                                             long_name: None,
-                                         },
-                                         UMLToken::EndUML],
-                        }));
+        assert_eq!(
+            result,
+            Done(
+                &[][..],
+                UMLTokens {
+                    tokens: vec![
+                        UMLToken::StartUML,
+                        UMLToken::Participant {
+                            short_name: "test1".to_string(),
+                            long_name: None,
+                        },
+                        UMLToken::EndUML
+                    ],
+                }
+            )
+        );
     }
 
     #[test]
@@ -964,51 +1172,57 @@ deactivate test deactivate
 "#;
         let result = ::uml_parser(test_uml.as_bytes());
 
-        assert_eq!(result,
-                   Done(&[][..],
-                        UMLTokens {
-                            tokens: vec![UMLToken::StartUML,
-                                         UMLToken::Participant {
-                                             short_name: "test1".to_string(),
-                                             long_name: None,
-                                         },
-                                         UMLToken::Note {
-                                             position: "position".to_string(),
-                                             text: "quick test".to_string(),
-                                         },
-                                         UMLToken::Participant {
-                                             short_name: "test".to_string(),
-                                             long_name: None,
-                                         },
-                                         UMLToken::Loop {
-                                             count: 5,
-                                             sequence: UMLTokens {
-                                                 tokens: vec![UMLToken::Parallel {
-                                                                  sequences: vec![UMLTokens {
-                                                                                      tokens: vec![
-                                            UMLToken::Note {
+        assert_eq!(
+            result,
+            Done(
+                &[][..],
+                UMLTokens {
+                    tokens: vec![
+                        UMLToken::StartUML,
+                        UMLToken::Participant {
+                            short_name: "test1".to_string(),
+                            long_name: None,
+                        },
+                        UMLToken::Note {
+                            position: "position".to_string(),
+                            text: "quick test".to_string(),
+                        },
+                        UMLToken::Participant {
+                            short_name: "test".to_string(),
+                            long_name: None,
+                        },
+                        UMLToken::Loop {
+                            count: 5,
+                            sequence: UMLTokens {
+                                tokens: vec![UMLToken::Parallel {
+                                    sequences: vec![
+                                        UMLTokens {
+                                            tokens: vec![UMLToken::Note {
                                                 position: "position".to_string(),
                                                 text: "inside par".to_string()
-                                            }
-                                        ],
-                                                                                  },
-                                                                                  UMLTokens {
-                                                                                      tokens: vec![
-                                            UMLToken::Note {
+                                            }],
+                                        },
+                                        UMLTokens {
+                                            tokens: vec![UMLToken::Note {
                                                 position: "position".to_string(),
                                                 text: "else clause".to_string()
-                                            }
-                                        ],
-                                                                                  }],
-                                                              }],
-                                             },
-                                         },
-                                         UMLToken::Activate { name: "test activate".to_string() },
-                                         UMLToken::Deactivate {
-                                             name: "test deactivate".to_string(),
-                                         },
-                                         UMLToken::EndUML],
-                        }));
+                                            }],
+                                        }
+                                    ],
+                                }],
+                            },
+                        },
+                        UMLToken::Activate {
+                            name: "test activate".to_string()
+                        },
+                        UMLToken::Deactivate {
+                            name: "test deactivate".to_string(),
+                        },
+                        UMLToken::EndUML
+                    ],
+                }
+            )
+        );
     }
 
     #[test]
@@ -1022,13 +1236,21 @@ delay 50
 "#;
         let result = ::uml_parser(test_uml.as_bytes());
 
-        assert_eq!(result,
-                   Done(&[][..],
-                        UMLTokens {
-                            tokens: vec![UMLToken::StartUML,
-                                         UMLToken::Delay { text: "50".to_string() },
-                                         UMLToken::EndUML],
-                        }));
+        assert_eq!(
+            result,
+            Done(
+                &[][..],
+                UMLTokens {
+                    tokens: vec![
+                        UMLToken::StartUML,
+                        UMLToken::Delay {
+                            text: "50".to_string()
+                        },
+                        UMLToken::EndUML
+                    ],
+                }
+            )
+        );
     }
 
     #[test]
@@ -1047,44 +1269,46 @@ end par
 "#;
         let result = ::uml_parser(test_uml.as_bytes());
 
-        assert_eq!(result,
-                   Done(&[][..],
-                        UMLTokens {
-                            tokens: vec![UMLToken::StartUML,
-                                         UMLToken::Parallel {
-                                             sequences: vec![UMLTokens {
-                                                                 tokens: vec![
-                                UMLToken::Message {
-                                    from: "PERSON_A".to_string(),
-                                    to: "PERSON_B".to_string(),
-                                    text: Some("Hello 1".to_string()),
-                                    colour: None
+        assert_eq!(
+            result,
+            Done(
+                &[][..],
+                UMLTokens {
+                    tokens: vec![
+                        UMLToken::StartUML,
+                        UMLToken::Parallel {
+                            sequences: vec![
+                                UMLTokens {
+                                    tokens: vec![UMLToken::Message {
+                                        from: "PERSON_A".to_string(),
+                                        to: "PERSON_B".to_string(),
+                                        text: Some("Hello 1".to_string()),
+                                        colour: None
+                                    }],
+                                },
+                                UMLTokens {
+                                    tokens: vec![UMLToken::Message {
+                                        from: "PERSON_A".to_string(),
+                                        to: "PERSON_B".to_string(),
+                                        text: Some("Hello 2".to_string()),
+                                        colour: None
+                                    }],
+                                },
+                                UMLTokens {
+                                    tokens: vec![UMLToken::Message {
+                                        from: "PERSON_A".to_string(),
+                                        to: "PERSON_B".to_string(),
+                                        text: Some("Hello 3".to_string()),
+                                        colour: None
+                                    }],
                                 }
                             ],
-                                                             },
-                                                             UMLTokens {
-                                                                 tokens: vec![
-                                UMLToken::Message {
-                                    from: "PERSON_A".to_string(),
-                                    to: "PERSON_B".to_string(),
-                                    text: Some("Hello 2".to_string()),
-                                    colour: None
-                                }
-                            ],
-                                                             },
-                                                             UMLTokens {
-                                                                 tokens: vec![
-                                UMLToken::Message {
-                                    from: "PERSON_A".to_string(),
-                                    to: "PERSON_B".to_string(),
-                                    text: Some("Hello 3".to_string()),
-                                    colour: None
-                                }
-                            ],
-                                                             }],
-                                         },
-                                         UMLToken::EndUML],
-                        }));
+                        },
+                        UMLToken::EndUML
+                    ],
+                }
+            )
+        );
     }
 
     #[test]
@@ -1119,6 +1343,9 @@ end alt
 box test
 participant contents
 end box
+group My group
+a->b:In group
+end group
 @enduml
 "#;
         let (_, uml_vector) = ::uml_parser(test_uml.as_bytes()).unwrap();
@@ -1141,23 +1368,66 @@ end box
 
         let result = ::alt_parser(test_uml.as_bytes());
 
-        assert_eq!(result,
-                   Done(&[][..],
-                        UMLToken::Alt {
-                            sequences: vec![UMLTokens {
-                                                tokens: vec![UMLToken::Message {
-                                                                 from: "PERSON_A".to_string(),
-                                                                 to: "PERSON_B".to_string(),
-                                                                 text: Some("Test".to_string()),
-                                                                 colour: None,
-                                                             }],
-                                            },
-                                            UMLTokens {
-                                                tokens: vec![UMLToken::Note {
-                                                                 position: "position".to_string(),
-                                                                 text: "quick test".to_string(),
-                                                             }],
-                                            }],
-                        }))
+        assert_eq!(
+            result,
+            Done(
+                &[][..],
+                UMLToken::Alt {
+                    sequences: vec![
+                        UMLTokens {
+                            tokens: vec![UMLToken::Message {
+                                from: "PERSON_A".to_string(),
+                                to: "PERSON_B".to_string(),
+                                text: Some("Test".to_string()),
+                                colour: None,
+                            }],
+                        },
+                        UMLTokens {
+                            tokens: vec![UMLToken::Note {
+                                position: "position".to_string(),
+                                text: "quick test".to_string(),
+                            }],
+                        }
+                    ],
+                }
+            )
+        )
+    }
+
+    #[test]
+    fn test_group_parser() {
+        let test_uml = r#"group My own label
+            Alice -> Log : Log attack start
+            Alice -> Log : Log attack end
+        end
+        "#;
+
+        let result = ::group_parser(test_uml.as_bytes());
+
+        assert_eq!(
+            result,
+            Done(
+                &[32, 32, 32, 32, 32, 32, 32, 32][..],
+                UMLToken::Group {
+                    sequences: vec![UMLTokens {
+                        tokens: vec![
+                            UMLToken::Message {
+                                from: "Alice".to_string(),
+                                to: "Log".to_string(),
+                                text: Some("Log attack start".to_string()),
+                                colour: None,
+                            },
+                            UMLToken::Message {
+                                from: "Alice".to_string(),
+                                to: "Log".to_string(),
+                                text: Some("Log attack end".to_string()),
+                                colour: None,
+                            }
+                        ],
+                    }],
+                    text: "My own label".to_string()
+                }
+            )
+        )
     }
 }

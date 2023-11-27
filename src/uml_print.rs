@@ -65,6 +65,23 @@ impl fmt::Display for UMLToken {
                 par_str
             }
 
+            UMLToken::Group { ref sequences,ref text} => {
+                let mut par_str = format!("group {}\n",text);
+                let mut first_loop = true;
+
+                for sequence in sequences.deref() {
+                    
+                    par_str.push_str(&format!("{}", sequence));
+
+                    first_loop = false;
+                }
+
+                par_str.push_str("end group\n");
+
+                par_str
+            }
+
+
             UMLToken::Message {
                 ref from,
                 ref to,
