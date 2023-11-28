@@ -1511,8 +1511,10 @@ end group
     #[test]
     fn test_opt_parser() {
         let test_uml = r#"opt My own label
-            Alice -> Log : Log attack start
-            Alice -> Log : Log attack end
+            group My test group
+                Alice -> Log : Log attack start
+                Alice -> Log : Log attack end
+            end
         end
         "#;
 
@@ -1525,17 +1527,24 @@ end group
                 UMLToken::Opt {
                     sequences: vec![UMLTokens {
                         tokens: vec![
-                            UMLToken::Message {
-                                from: "Alice".to_string(),
-                                to: "Log".to_string(),
-                                text: Some("Log attack start".to_string()),
-                                colour: None,
-                            },
-                            UMLToken::Message {
-                                from: "Alice".to_string(),
-                                to: "Log".to_string(),
-                                text: Some("Log attack end".to_string()),
-                                colour: None,
+                            UMLToken::Group{
+                                text:"My test group".to_string(),
+                                sequences:vec![UMLTokens{
+                                    tokens:vec![
+                                        UMLToken::Message {
+                                            from: "Alice".to_string(),
+                                            to: "Log".to_string(),
+                                            text: Some("Log attack start".to_string()),
+                                            colour: None,
+                                        },
+                                        UMLToken::Message {
+                                            from: "Alice".to_string(),
+                                            to: "Log".to_string(),
+                                            text: Some("Log attack end".to_string()),
+                                            colour: None,
+                                        }
+                                    ]
+                                }]
                             }
                         ],
                     }],
