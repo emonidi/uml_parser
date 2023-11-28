@@ -67,8 +67,12 @@ pub enum UMLToken {
         text: String,
     },
     Section {
-        text: String
-    }
+        text: String,
+    },
+    Opt {
+        sequences: Vec<UMLTokens>,
+        text: String,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -437,8 +441,6 @@ named!(message_parser<&[u8], UMLToken>,
     )
 );
 
-
-
 named!(par_parser<&[u8], UMLToken>,
   chain!(
     space?                                ~
@@ -532,6 +534,39 @@ named!(alt_parser<&[u8], UMLToken>,
     }
   )
 );
+
+named! {opt_parser<&[u8],UMLToken>,
+      chain!(
+    space?                                ~
+    tag!("opt") ~
+    space? ~
+    text: map_res!(
+        not_line_ending,
+        std::str::from_utf8
+    )~
+    uml_array: many1!(
+        chain!(
+            tokens: uml_parser            ~
+            space?                        ~
+            line_ending?                  ~
+            || {
+                tokens
+            }
+        )
+    )                                     ~
+    tag!("end")                           ~
+    not_line_ending                       ~
+    line_ending
+    ,
+    || {
+        UMLToken::Opt {
+            sequences: uml_array,
+            text:text.trim().to_string()
+        }
+    }
+  )
+
+}
 
 named!(delay_parser<&[u8], UMLToken>,
     chain!(
@@ -628,6 +663,7 @@ named!(pub uml_parser<&[u8], UMLTokens >,
                     one_line_note_parser |
                     participant_parser |
                     par_parser |
+                    opt_parser |
                     alt_parser |
                     group_parser |
                     delay_parser |
@@ -754,9 +790,14 @@ mod tests {
     fn test_section_parser() {
         let test_uml = "==THIS IS A TEST==\n";
         let result = ::section_parser(test_uml.as_bytes());
-        assert_eq!(result,
-            Done(&[][..],
-            UMLToken::Section { text: "THIS IS A TEST".to_string()})
+        assert_eq!(
+            result,
+            Done(
+                &[][..],
+                UMLToken::Section {
+                    text: "THIS IS A TEST".to_string()
+                }
+            )
         );
     }
 
@@ -1445,6 +1486,43 @@ end group
             Done(
                 &[32, 32, 32, 32, 32, 32, 32, 32][..],
                 UMLToken::Group {
+                    sequences: vec![UMLTokens {
+                        tokens: vec![
+                            UMLToken::Message {
+                                from: "Alice".to_string(),
+                                to: "Log".to_string(),
+                                text: Some("Log attack start".to_string()),
+                                colour: None,
+                            },
+                            UMLToken::Message {
+                                from: "Alice".to_string(),
+                                to: "Log".to_string(),
+                                text: Some("Log attack end".to_string()),
+                                colour: None,
+                            }
+                        ],
+                    }],
+                    text: "My own label".to_string()
+                }
+            )
+        )
+    }
+
+    #[test]
+    fn test_opt_parser() {
+        let test_uml = r#"opt My own label
+            Alice -> Log : Log attack start
+            Alice -> Log : Log attack end
+        end
+        "#;
+
+        let result = ::opt_parser(test_uml.as_bytes());
+
+        assert_eq!(
+            result,
+            Done(
+                &[32, 32, 32, 32, 32, 32, 32, 32][..],
+                UMLToken::Opt {
                     sequences: vec![UMLTokens {
                         tokens: vec![
                             UMLToken::Message {

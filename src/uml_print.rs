@@ -79,7 +79,24 @@ impl fmt::Display for UMLToken {
                 par_str.push_str("end group\n");
 
                 par_str
+            },
+
+            UMLToken::Opt { ref sequences,ref text} => {
+                let mut par_str = format!("opt {}\n",text);
+                let mut first_loop = true;
+
+                for sequence in sequences.deref() {
+                    
+                    par_str.push_str(&format!("{}", sequence));
+
+                    first_loop = false;
+                }
+
+                par_str.push_str("end opt\n");
+
+                par_str
             }
+
 
 
             UMLToken::Message {
