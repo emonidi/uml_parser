@@ -323,7 +323,7 @@ named!(one_line_note_parser<&[u8], UMLToken>,
             std::str::from_utf8
         )~
         space? ~
-        line_ending?
+        line_ending
         ,
         || {
             UMLToken::Note {
